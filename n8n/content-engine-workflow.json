@@ -1,0 +1,515 @@
+{
+  "meta": {
+    "instanceId": "cantonese-ai-education-content-engine",
+    "templateCredsSetupCompleted": true
+  },
+  "nodes": [
+    {
+      "id": "a1b2c3d4-0001-4000-8000-000000000001",
+      "name": "Daily Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * *"
+            }
+          ]
+        },
+        "timezone": "Asia/Hong_Kong"
+      }
+    },
+    {
+      "id": "a1b2c3d4-0002-4000-8000-000000000002",
+      "name": "Fetch Topic Backlog",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 300],
+      "parameters": {
+        "method": "GET",
+        "url": "={{$env.SHEET_URL}}",
+        "authentication": "none",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0003-4000-8000-000000000003",
+      "name": "Pick Next Topic",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300],
+      "parameters": {
+        "jsCode": "// Pillar distribution weights: 40% Education, 25% Inspiration, 20% Product, 15% Community\nconst PILLARS = [\n  { label: 'Education', weight: 40 },\n  { label: 'Inspiration', weight: 25 },\n  { label: 'Product', weight: 20 },\n  { label: 'Community', weight: 15 },\n];\n\nfunction pickPillar() {\n  const rand = Math.random() * 100;\n  let cumulative = 0;\n  for (const pillar of PILLARS) {\n    cumulative += pillar.weight;\n    if (rand < cumulative) return pillar.label;\n  }\n  return PILLARS[0].label;\n}\n\n// Get topics from Google Sheets response\nconst sheetData = $input.first().json;\nconst topics = Array.isArray(sheetData) ? sheetData : (sheetData.values || []);\n\n// Filter pending topics (not yet published)\nconst pending = topics.filter(row => {\n  const status = Array.isArray(row) ? row[2] : row.status;\n  return !status || status === '' || status === 'pending';\n});\n\nif (pending.length === 0) {\n  throw new Error('No pending topics in backlog. Please add topics to the Google Sheet.');\n}\n\n// Pick the first pending topic\nconst topicRow = pending[0];\nconst topicTitle = Array.isArray(topicRow) ? topicRow[0] : topicRow.topic;\nconst topicNotes = Array.isArray(topicRow) ? (topicRow[1] || '') : (topicRow.notes || '');\nconst pillar = pickPillar();\n\nreturn [\n  {\n    json: {\n      topic: topicTitle,\n      notes: topicNotes,\n      pillar: pillar,\n      timestamp: new Date().toISOString(),\n      rowIndex: topics.indexOf(topicRow),\n    }\n  }\n];"
+      }
+    },
+    {
+      "id": "a1b2c3d4-0004-4000-8000-000000000004",
+      "name": "DeepSeek Content Draft",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.deepseek.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.DEEPSEEK_API_KEY}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": []
+        },
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"deepseek-chat\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"你係一位專業嘅廣東話AI教育內容創作者，專門為香港及大灣區嘅學習者創作高質素嘅教育內容。\\n\\n你嘅職責：\\n1. 用生動活潑嘅廣東話撰寫教育貼文\\n2. 確保內容準確、易明、有趣\\n3. 針對唔同學習階段嘅受眾（初學者至進階）\\n4. 加入實際例子同應用場景\\n5. 使用親切自然嘅廣東話語氣，唔好太文謅謅\\n\\n輸出格式要求：\\n- 標題：吸引眼球，用廣東話口語\\n- 內文：300-500字，分段落，用表情符號增加可讀性\\n- 重點總結：3-5個要點\\n- 互動問題：一條引發討論嘅問題\\n- Hashtags：10個相關標籤（廣東話+英文）\\n\\n柱子類型：{{ $json.pillar }}\\n請根據柱子類型調整內容風格：\\n- Education（教育）：深入淺出，知識性強\\n- Inspiration（啟發）：激勵人心，分享成功故事\\n- Product（產品）：突出功能優勢，解決痛點\\n- Community（社群）：建立連結，鼓勵互動\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"請為以下主題創作一篇廣東話教育內容貼文：\\n\\n主題：{{ $json.topic }}\\n備註：{{ $json.notes }}\\n\\n請依照上述格式輸出完整內容。\"\n    }\n  ],\n  \"temperature\": 0.8,\n  \"max_tokens\": 2000\n}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0005-4000-8000-000000000005",
+      "name": "OpenAI Visual Prompt Gen",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1120, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.OPENAI_API_KEY}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"gpt-4o\",\n  \"messages\": [\n    {\n      \"role\": \"system\",\n      \"content\": \"你係一位專業嘅視覺設計提示詞專家，專門為AI圖像生成工具（Midjourney、DALL-E、Stable Diffusion）創作高效嘅視覺提示詞。\\n\\n你嘅職責：\\n1. 根據廣東話教育內容分析主題同情感基調\\n2. 創作3個不同風格嘅視覺提示詞（英文）\\n3. 每個提示詞針對唔同平台優化：Instagram、Facebook、LinkedIn\\n4. 確保視覺元素符合香港/亞洲文化美學\\n5. 加入具體嘅色彩方案、構圖建議同藝術風格\\n\\n輸出格式：\\n{\\n  \\\"instagram_prompt\\\": \\\"[詳細嘅Instagram視覺提示詞，適合正方形格式]\\\",\\n  \\\"facebook_prompt\\\": \\\"[詳細嘅Facebook視覺提示詞，適合橫版格式]\\\",\\n  \\\"linkedin_prompt\\\": \\\"[詳細嘅LinkedIn視覺提示詞，專業商業風格]\\\",\\n  \\\"color_scheme\\\": \\\"[推薦色彩方案]\\\",\\n  \\\"style_notes\\\": \\\"[視覺風格備註]\\\",\\n  \\\"canva_template_suggestion\\\": \\\"[Canva模板建議]\\\"\n}\"\n    },\n    {\n      \"role\": \"user\",\n      \"content\": \"請根據以下教育內容生成視覺提示詞：\\n\\n主題：{{ $('Pick Next Topic').item.json.topic }}\\n柱子類型：{{ $('Pick Next Topic').item.json.pillar }}\\n\\n內容摘要：{{ $json.choices[0].message.content.substring(0, 500) }}\\n\\n請輸出JSON格式嘅視覺提示詞。\"\n    }\n  ],\n  \"temperature\": 0.7,\n  \"max_tokens\": 1500,\n  \"response_format\": { \"type\": \"json_object\" }\n}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0006-4000-8000-000000000006",
+      "name": "Send Draft to Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1340, 300],
+      "parameters": {
+        "chatId": "={{$env.TELEGRAM_CHAT_ID}}",
+        "text": "=📝 *新內容草稿準備好啦！*\n\n🏷️ 主題：{{ $('Pick Next Topic').item.json.topic }}\n📌 柱子：{{ $('Pick Next Topic').item.json.pillar }}\n⏰ 生成時間：{{ $('Pick Next Topic').item.json.timestamp }}\n\n---\n\n{{ $('DeepSeek Content Draft').item.json.choices[0].message.content }}\n\n---\n\n🎨 *視覺提示詞已生成*\n請審核以上內容，然後按下方按鈕批准或拒絕發布。",
+        "additionalFields": {
+          "parse_mode": "Markdown",
+          "reply_markup": "{\"inline_keyboard\":[[{\"text\":\"✅ 批准發布\",\"callback_data\":\"approve\"},{\"text\":\"❌ 拒絕修改\",\"callback_data\":\"reject\"}]]}"
+        }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0007-4000-8000-000000000007",
+      "name": "Check Approval",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1560, 300],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "approval-check-001",
+              "leftValue": "={{ $json.callback_query.data }}",
+              "rightValue": "approve",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "a1b2c3d4-0008-4000-8000-000000000008",
+      "name": "Schedule Post via Publer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1780, 200],
+      "parameters": {
+        "method": "POST",
+        "url": "https://app.publer.io/api/v1/posts",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{$env.PUBLER_API_KEY}}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"text\": {{ JSON.stringify($('DeepSeek Content Draft').item.json.choices[0].message.content) }},\n  \"account_ids\": [],\n  \"scheduled_at\": \"{{ DateTime.now().plus({ hours: 2 }).toISO() }}\",\n  \"media\": [],\n  \"note\": \"Auto-generated by Cantonese AI Content Engine | Pillar: {{ $('Pick Next Topic').item.json.pillar }} | Topic: {{ $('Pick Next Topic').item.json.topic }}\"\n}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0009-4000-8000-000000000009",
+      "name": "Send Success Confirmation",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [2000, 200],
+      "parameters": {
+        "chatId": "={{$env.TELEGRAM_CHAT_ID}}",
+        "text": "=✅ *貼文排程成功！*\n\n📌 主題：{{ $('Pick Next Topic').item.json.topic }}\n🏷️ 柱子：{{ $('Pick Next Topic').item.json.pillar }}\n⏰ 排程時間：{{ DateTime.now().plus({ hours: 2 }).toFormat('yyyy-MM-dd HH:mm') }} HKT\n📊 Publer Post ID：{{ $('Schedule Post via Publer').item.json.id || 'N/A' }}\n\n🎉 內容已成功排程發布，繼續努力！",
+        "additionalFields": {
+          "parse_mode": "Markdown"
+        }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0010-4000-8000-000000000010",
+      "name": "Slides Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 700],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "generate-slides",
+        "responseMode": "responseNode",
+        "options": {
+          "rawBody": false
+        }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0011-4000-8000-000000000011",
+      "name": "Gemini Slides Outline",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [460, 700],
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={{$env.GEMINI_API_KEY}}",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"contents\": [\n    {\n      \"parts\": [\n        {\n          \"text\": \"你係一位專業嘅廣東話AI教育課程設計師，請為以下主題設計一套完整嘅16頁教學幻燈片大綱。\\n\\n主題：{{ $json.body.topic }}\\n目標受眾：{{ $json.body.audience || '香港中學生及大學生' }}\\n學習目標：{{ $json.body.objectives || '掌握核心概念並能實際應用' }}\\n\\n請用廣東話輸出以下JSON格式：\\n{\\n  \\\"title\\\": \\\"課程標題\\\",\\n  \\\"subtitle\\\": \\\"副標題\\\",\\n  \\\"total_slides\\\": 16,\\n  \\\"slides\\\": [\\n    {\\n      \\\"slide_number\\\": 1,\\n      \\\"type\\\": \\\"cover | content | activity | summary | quiz\\\",\\n      \\\"title\\\": \\\"幻燈片標題\\\",\\n      \\\"content_points\\\": [\\\"要點1\\\", \\\"要點2\\\", \\\"要點3\\\"],\\n      \\\"speaker_notes\\\": \\\"講師備注\\\",\\n      \\\"visual_suggestion\\\": \\\"視覺元素建議\\\",\\n      \\\"activity\\\": \\\"互動活動（如有）\\\"\\n    }\\n  ],\\n  \\\"learning_outcomes\\\": [\\\"成果1\\\", \\\"成果2\\\", \\\"成果3\\\"],\\n  \\\"assessment_ideas\\\": [\\\"評估方法1\\\", \\\"評估方法2\\\"]\\n}\\n\\n確保16頁涵蓋：封面(1)、學習目標(1)、核心概念(6-8)、互動活動(2-3)、案例研究(1-2)、總結(1)、測驗/反思(1)\"\n        }\n      ]\n    }\n  ],\n  \"generationConfig\": {\n    \"temperature\": 0.7,\n    \"maxOutputTokens\": 4096,\n    \"responseMimeType\": \"application/json\"\n  }\n}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0012-4000-8000-000000000012",
+      "name": "Create Google Slides",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [680, 700],
+      "parameters": {
+        "method": "POST",
+        "url": "={{$env.APPS_SCRIPT_URL}}",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"action\": \"createPresentation\",\n  \"outline\": {{ JSON.stringify($json.candidates[0].content.parts[0].text) }},\n  \"topic\": \"{{ $('Slides Webhook Trigger').item.json.body.topic }}\",\n  \"theme\": \"{{ $('Slides Webhook Trigger').item.json.body.theme || 'modern-cantonese' }}\",\n  \"branding\": {\n    \"primaryColor\": \"#FF6B35\",\n    \"secondaryColor\": \"#004E89\",\n    \"fontFamily\": \"Noto Sans HK\",\n    \"logoUrl\": \"{{ $env.LOGO_URL || '' }}\"\n  },\n  \"outputFormat\": \"google_slides\",\n  \"shareWithEmail\": \"{{ $env.GOOGLE_SHARE_EMAIL || '' }}\"\n}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0013-4000-8000-000000000013",
+      "name": "Claude Haiku Prompt Pack",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 700],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{$env.ANTHROPIC_API_KEY}}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"model\": \"claude-haiku-4-5-20251001\",\n  \"max_tokens\": 3000,\n  \"system\": \"你係一位專業嘅廣東話教育資源設計師，專門創作配套學習材料。\\n\\n你嘅職責：\\n1. 根據課程大綱生成完整嘅提示詞包（Prompt Pack）\\n2. 提示詞包包括：學習前評估、課堂討論問題、反思活動、延伸探究任務\\n3. 所有內容用廣東話撰寫，適合香港教育環境\\n4. 提供教師版同學生版兩個版本\\n5. 確保問題層次分明（知識→理解→應用→分析→評估→創造）\\n\\n輸出格式為結構化PDF內容，包括：\\n- 封面頁資訊\\n- 教師使用指引\\n- 學習前熱身活動（5題）\\n- 課堂討論問題（10題，分不同難度）\\n- 小組活動指引（3個活動）\\n- 個人反思問題（5題）\\n- 延伸學習資源建議\\n- 評估量表\",\n  \"messages\": [\n    {\n      \"role\": \"user\",\n      \"content\": \"請根據以下課程大綱生成完整嘅提示詞包PDF內容：\\n\\n課程主題：{{ $('Slides Webhook Trigger').item.json.body.topic }}\\n目標受眾：{{ $('Slides Webhook Trigger').item.json.body.audience || '香港中學生及大學生' }}\\n\\n課程大綱摘要：{{ JSON.stringify($('Gemini Slides Outline').item.json.candidates[0].content.parts[0].text).substring(0, 1000) }}...\\n\\nGoogle Slides連結：{{ $('Create Google Slides').item.json.slidesUrl || '待生成' }}\\n\\n請輸出完整嘅提示詞包內容，格式清晰，方便直接轉換為PDF。\"\n    }\n  ]\n}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "a1b2c3d4-0014-4000-8000-000000000014",
+      "name": "Send Slides Link to Telegram",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1120, 700],
+      "parameters": {
+        "chatId": "={{$env.TELEGRAM_CHAT_ID}}",
+        "text": "=🎓 *Google Slides 課程幻燈片已生成！*\n\n📚 課程主題：{{ $('Slides Webhook Trigger').item.json.body.topic }}\n👥 目標受眾：{{ $('Slides Webhook Trigger').item.json.body.audience || '香港中學生及大學生' }}\n\n🔗 *Google Slides 連結：*\n{{ $('Create Google Slides').item.json.slidesUrl || '連結生成中...' }}\n\n📝 *提示詞包已生成*\n{{ $('Create Google Slides').item.json.promptPackUrl || '提示詞包準備就緒，請查看附件' }}\n\n✨ 共16頁精心設計嘅廣東話教學幻燈片！\n⏰ 生成時間：{{ DateTime.now().toFormat('yyyy-MM-dd HH:mm') }} HKT",
+        "additionalFields": {
+          "parse_mode": "Markdown",
+          "disable_web_page_preview": false
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Daily Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Fetch Topic Backlog",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Topic Backlog": {
+      "main": [
+        [
+          {
+            "node": "Pick Next Topic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick Next Topic": {
+      "main": [
+        [
+          {
+            "node": "DeepSeek Content Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DeepSeek Content Draft": {
+      "main": [
+        [
+          {
+            "node": "OpenAI Visual Prompt Gen",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Visual Prompt Gen": {
+      "main": [
+        [
+          {
+            "node": "Send Draft to Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Draft to Telegram": {
+      "main": [
+        [
+          {
+            "node": "Check Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Approval": {
+      "main": [
+        [
+          {
+            "node": "Schedule Post via Publer",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Schedule Post via Publer": {
+      "main": [
+        [
+          {
+            "node": "Send Success Confirmation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slides Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Gemini Slides Outline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Gemini Slides Outline": {
+      "main": [
+        [
+          {
+            "node": "Create Google Slides",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Google Slides": {
+      "main": [
+        [
+          {
+            "node": "Claude Haiku Prompt Pack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Claude Haiku Prompt Pack": {
+      "main": [
+        [
+          {
+            "node": "Send Slides Link to Telegram",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "",
+    "timezone": "Asia/Hong_Kong"
+  },
+  "staticData": null,
+  "tags": [
+    {
+      "createdAt": "2026-06-26T00:00:00.000Z",
+      "updatedAt": "2026-06-26T00:00:00.000Z",
+      "id": "tag-cantonese-ai-001",
+      "name": "cantonese-ai-education"
+    },
+    {
+      "createdAt": "2026-06-26T00:00:00.000Z",
+      "updatedAt": "2026-06-26T00:00:00.000Z",
+      "id": "tag-content-engine-001",
+      "name": "content-engine"
+    }
+  ],
+  "triggerCount": 2,
+  "updatedAt": "2026-06-26T00:00:00.000Z",
+  "versionId": "1"
+}
