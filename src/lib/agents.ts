@@ -11,16 +11,29 @@ export interface PublishResult {
   error?: string;
 }
 
+export interface BrandContext {
+  name: string;
+  tone: string;
+  audience: string;
+  colorPalette: string;
+  visualStyle: string;
+  competitors: string;
+  keywords: string;
+  referenceUrls: string;
+  generatedAt?: string;
+}
+
 export async function generatePost(
   topic: string,
   pillar: string,
   provider: string,
-  apiKey: string
+  apiKey: string,
+  brandContext?: BrandContext
 ): Promise<string> {
   const response = await fetch("/api/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ topic, pillar, provider, apiKey }),
+    body: JSON.stringify({ topic, pillar, provider, apiKey, brandContext }),
   });
 
   if (!response.ok) {

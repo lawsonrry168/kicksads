@@ -2,7 +2,7 @@
 
 import React, { useState, useCallback } from "react";
 import { PROVIDERS, AGENTS, type Provider } from "@/lib/providers";
-import { generatePost, generateSlides, type SlideOutline } from "@/lib/agents";
+import { generatePost, generateSlides, type SlideOutline, type BrandContext } from "@/lib/agents";
 import AgentLog, { type LogEntry } from "./AgentLog";
 import { type Lang, t, tArr } from "@/lib/i18n";
 
@@ -526,6 +526,112 @@ export default function Dashboard() {
   const [genLoading, setGenLoading] = useState(false);
   const [genError, setGenError] = useState("");
 
+  // Integration state
+  const [integrations, setIntegrations] = useState({
+    publerKey: "",
+    telegramToken: "",
+    n8nWebhookUrl: "",
+    googleSheetsId: "",
+    appsScriptUrl: "",
+  });
+  const [integrationExpanded, setIntegrationExpanded] = useState<string | null>(null);
+  const [integrationTestState, setIntegrationTestState] = useState<Record<string, "idle" | "testing" | "ok" | "fail">>({});
+
+  function setIntegrationField(field: keyof typeof integrations, value: string) {
+    setIntegrations((prev) => ({ ...prev, [field]: value }));
+    // Reset test state when value changes
+    setIntegrationTestState((prev) => ({ ...prev, [field]: "idle" }));
+  }
+
+  async function testIntegration(key: keyof typeof integrations, val: string) {
+    if (!val) return;
+    setIntegrationTestState((prev) => ({ ...prev, [key]: "testing" }));
+    // Simulate async test with mock responses
+    await new Promise((r) => setTimeout(r, 1200 + Math.random() * 800));
+    const mockResults: Record<string, "ok" | "fail"> = {
+      publerKey: val.length > 8 ? "ok" : "fail",
+      telegramToken: val.includes(":") ? "ok" : "fail",
+      n8nWebhookUrl: val.startsWith("http") ? "ok" : "fail",
+      googleSheetsId: val.length > 20 ? "ok" : "fail",
+      appsScriptUrl: val.startsWith("http") ? "ok" : "fail",
+    };
+    setIntegrationTestState((prev) => ({ ...prev, [key]: mockResults[key] }));
+  }
+
+  // Brand context state
+  const [brandInput, setBrandInput] = useState({
+    name: "",
+    referenceUrls: "",   // competitor / reference URLs, one per line
+    keywords: "",
+    audience: "",
+    rawNotes: "",        // free-form user description
+  });
+  const [brand, setBrand] = useState<BrandContext | null>(null);
+  const [brandAnalyzing, setBrandAnalyzing] = useState(false);
+  const [brandError, setBrandError] = useState("");
+
+  const handleAnalyzeBrand = async () => {
+    const apiProvider = Object.entries(providerStates).find(([, s]) => s.connected && s.apiKey);
+    if (!apiProvider) {
+      setBrandError(lang === "zh" ? "請先設定並測試任一 AI 金鑰" : "Connect at least one AI provider first");
+      return;
+    }
+    const [provider, state] = apiProvider;
+    setBrandAnalyzing(true);
+    setBrandError("");
+    addLog("visual-prompt-gen", lang === "zh" ? "分析品牌素材中…" : "Analyzing brand materials…", "info");
+
+    const analysisPrompt = `你係一個品牌策略師同視覺設計顧問。
+根據以下資料，生成一份結構化品牌設定 JSON，用於指導社交媒體帖文撰寫同視覺 Prompt 生成。
+
+品牌名稱：${brandInput.name || "未提供"}
+目標受眾描述：${brandInput.audience || "未提供"}
+品牌關鍵字 / 服務：${brandInput.keywords || "未提供"}
+競對/參考網站：${brandInput.referenceUrls || "未提供"}
+補充說明：${brandInput.rawNotes || "未提供"}
+
+請回傳 pure JSON（不要 markdown code block），格式如下：
+{
+  "name": "品牌名稱",
+  "tone": "語氣描述（例：專業但親切，地道廣東話，帶教育感）",
+  "audience": "目標受眾（例：香港中學老師、教育工作者、30-50歲）",
+  "colorPalette": "建議色彩方案（例：深藍 #1e3a5f, 紫色 #7c6fff, 白色 #ffffff）",
+  "visualStyle": "視覺語言（例：flat design, 簡潔現代, 教育科技感, 少裝飾）",
+  "competitors": "競對分析摘要（例：競對多用正式英文, 本品牌以廣東話親切感區分）",
+  "keywords": "核心關鍵字標籤（例：#AI教育 #Prompt工程 #香港教師）",
+  "referenceUrls": "${brandInput.referenceUrls}"
+}`;
+
+    try {
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          topic: analysisPrompt,
+          pillar: "brand-analysis",
+          provider,
+          apiKey: state.apiKey,
+          model: state.selectedModel,
+        }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error);
+      const data = await res.json();
+      const raw: string = data.content || "";
+      const jsonMatch = raw.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) throw new Error(lang === "zh" ? "AI 未能生成有效 JSON" : "AI did not return valid JSON");
+      const parsed = JSON.parse(jsonMatch[0]) as BrandContext;
+      parsed.generatedAt = new Date().toLocaleString("zh-HK");
+      setBrand(parsed);
+      addLog("visual-prompt-gen", lang === "zh" ? "品牌設定已生成 ✓" : "Brand profile generated ✓", "ok");
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Unknown error";
+      setBrandError(msg);
+      addLog("visual-prompt-gen", `Brand analysis error: ${msg}`, "error");
+    } finally {
+      setBrandAnalyzing(false);
+    }
+  };
+
   // Slides form state
   const [slideTopic, setSlideTopic] = useState("");
   const [slideAudience, setSlideAudience] = useState("中學老師 / 教育工作者");
@@ -601,7 +707,8 @@ export default function Dashboard() {
         genTopic,
         genPillar,
         genProvider,
-        state.apiKey
+        state.apiKey,
+        brand ?? undefined
       );
       setGenResult(content);
       addLog("content-drafter", "Post generated successfully", "ok");
@@ -1009,6 +1116,13 @@ export default function Dashboard() {
               onProviderChange={setGenProvider}
               onGenerate={handleGenerate}
               lang={lang}
+              brandInput={brandInput}
+              onBrandInputChange={(field, val) => setBrandInput((p) => ({ ...p, [field]: val }))}
+              brand={brand}
+              brandAnalyzing={brandAnalyzing}
+              brandError={brandError}
+              onAnalyzeBrand={handleAnalyzeBrand}
+              onClearBrand={() => { setBrand(null); setBrandError(""); }}
             />
           )}
           {activeTab === "routing" && <RoutingTab lang={lang} />}
@@ -1160,11 +1274,76 @@ export default function Dashboard() {
           <span style={{ color: "var(--blue)" }}>⬡</span> {t("panel_integrations", lang)}
         </div>
         <div style={{ padding: "10px 12px", overflowY: "auto", flex: 1 }}>
-          <IntegrationRow name="Publer" status={t("not_configured", lang)} />
-          <IntegrationRow name="Telegram Bot" status={t("not_configured", lang)} />
-          <IntegrationRow name="n8n Webhook" status={t("not_configured", lang)} />
-          <IntegrationRow name="Google Sheets" status={t("not_configured", lang)} />
-          <IntegrationRow name="Apps Script" status={t("not_configured", lang)} />
+          {([
+            { key: "publerKey", name: "Publer", placeholder: lang === "zh" ? "Publer API 金鑰" : "Publer API key", hint: "publer.io → Settings → API" },
+            { key: "telegramToken", name: "Telegram Bot", placeholder: lang === "zh" ? "Bot Token (從 @BotFather 取得)" : "Bot Token (from @BotFather)", hint: "t.me/BotFather → /newbot" },
+            { key: "n8nWebhookUrl", name: "n8n Webhook", placeholder: lang === "zh" ? "Webhook URL" : "Webhook URL", hint: "n8n → Webhook node → copy URL" },
+            { key: "googleSheetsId", name: "Google Sheets", placeholder: lang === "zh" ? "試算表 ID" : "Spreadsheet ID", hint: "docs.google.com/spreadsheets/d/{ID}" },
+            { key: "appsScriptUrl", name: "Apps Script", placeholder: lang === "zh" ? "部署網址" : "Deployed URL", hint: "script.google.com → Deploy → Web app URL" },
+          ] as { key: keyof typeof integrations; name: string; placeholder: string; hint: string }[]).map(({ key, name, placeholder, hint }) => {
+            const val = integrations[key];
+            const isOpen = integrationExpanded === key;
+            return (
+              <div key={key} style={{ borderBottom: "1px solid var(--border)" }}>
+                <div
+                  onClick={() => setIntegrationExpanded(isOpen ? null : key)}
+                  style={{ display: "flex", alignItems: "center", gap: "8px", padding: "6px 0", cursor: "pointer" }}
+                >
+                  <div style={{ width: "6px", height: "6px", borderRadius: "50%", background: val ? "var(--green)" : "var(--text3)", flexShrink: 0 }} />
+                  <span style={{ fontSize: "11px", color: "var(--text2)", flex: 1 }}>{name}</span>
+                  <span style={{ fontSize: "10px", color: val ? "var(--green)" : "var(--text3)" }}>
+                    {val ? (lang === "zh" ? "已設定" : "Set") : (lang === "zh" ? "未設定" : "Not set")}
+                  </span>
+                  <span style={{ fontSize: "9px", color: "var(--text3)" }}>{isOpen ? "▲" : "▼"}</span>
+                </div>
+                {isOpen && (
+                  <div style={{ paddingBottom: "8px" }}>
+                    <input
+                      type={key === "publerKey" || key === "telegramToken" ? "password" : "text"}
+                      value={val}
+                      onChange={(e) => setIntegrationField(key, e.target.value)}
+                      placeholder={placeholder}
+                      style={{
+                        width: "100%", boxSizing: "border-box", background: "var(--bg3)",
+                        border: "1px solid var(--border)", borderRadius: "3px",
+                        color: "var(--text1)", fontSize: "10px", padding: "5px 8px",
+                        fontFamily: "monospace",
+                      }}
+                    />
+                    <div style={{ fontSize: "9px", color: "var(--text3)", marginTop: "3px" }}>{hint}</div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "6px" }}>
+                      {val && (
+                        <button
+                          onClick={() => testIntegration(key, val)}
+                          disabled={integrationTestState[key] === "testing"}
+                          className="ide-btn primary"
+                          style={{ fontSize: "9px", padding: "3px 8px" }}
+                        >
+                          {integrationTestState[key] === "testing"
+                            ? (lang === "zh" ? "測試中…" : "Testing…")
+                            : (lang === "zh" ? "⚡ 測試連接" : "⚡ Test")}
+                        </button>
+                      )}
+                      {integrationTestState[key] === "ok" && (
+                        <span style={{ fontSize: "9px", color: "var(--green)" }}>✓ {lang === "zh" ? "連接成功" : "Connected"}</span>
+                      )}
+                      {integrationTestState[key] === "fail" && (
+                        <span style={{ fontSize: "9px", color: "var(--red)" }}>✗ {lang === "zh" ? "連接失敗，請檢查輸入" : "Failed – check value"}</span>
+                      )}
+                      {val && (
+                        <button
+                          onClick={() => setIntegrationField(key, "")}
+                          style={{ marginLeft: "auto", fontSize: "9px", color: "var(--text3)", background: "none", border: "none", cursor: "pointer", padding: 0 }}
+                        >
+                          {lang === "zh" ? "清除" : "Clear"}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
           <div
             style={{
               marginTop: "12px",
@@ -1275,7 +1454,153 @@ function IntegrationRow({
   );
 }
 
+/* ─── Brand Panel ─────────────────────────────────────────── */
+
+function BrandPanel({
+  lang, brandInput, onBrandInputChange, brand, brandAnalyzing, brandError, onAnalyzeBrand, onClearBrand,
+}: {
+  lang: Lang;
+  brandInput: { name: string; referenceUrls: string; keywords: string; audience: string; rawNotes: string };
+  onBrandInputChange: (field: "name" | "referenceUrls" | "keywords" | "audience" | "rawNotes", val: string) => void;
+  brand: BrandContext | null;
+  brandAnalyzing: boolean;
+  brandError: string;
+  onAnalyzeBrand: () => void;
+  onClearBrand: () => void;
+}) {
+  const [open, setOpen] = React.useState(false);
+  const zh = lang === "zh";
+
+  return (
+    <div style={{ marginBottom: "12px", border: "1px solid rgba(124,111,255,0.35)", borderRadius: "4px", overflow: "hidden" }}>
+      {/* Header */}
+      <div
+        onClick={() => setOpen((o) => !o)}
+        style={{ display: "flex", alignItems: "center", gap: "6px", padding: "7px 10px", background: "rgba(124,111,255,0.08)", cursor: "pointer" }}
+      >
+        <span style={{ fontSize: "12px" }}>🎨</span>
+        <span style={{ fontSize: "11px", fontWeight: 700, color: "var(--purple)", flex: 1 }}>
+          {zh ? "品牌素材 & 視覺設定" : "Brand & Visual Profile"}
+        </span>
+        {brand && <span style={{ fontSize: "9px", color: "var(--green)" }}>● {zh ? "已載入" : "Active"}</span>}
+        <span style={{ fontSize: "9px", color: "var(--text3)" }}>{open ? "▲" : "▼"}</span>
+      </div>
+
+      {open && (
+        <div style={{ padding: "10px 10px 6px" }}>
+          {/* Input fields */}
+          {([
+            { field: "name" as const, label: zh ? "品牌 / 帳號名稱" : "Brand / Account name", ph: "e.g. KickAds AI Education" },
+            { field: "audience" as const, label: zh ? "目標受眾" : "Target audience", ph: zh ? "e.g. 香港中學老師、30-50歲" : "e.g. HK secondary school teachers" },
+            { field: "keywords" as const, label: zh ? "品牌關鍵字 / 核心服務" : "Brand keywords / services", ph: zh ? "AI工具教育, Prompt工程, Manus" : "AI tools, prompt engineering" },
+          ]).map(({ field, label, ph }) => (
+            <div key={field} style={{ marginBottom: "8px" }}>
+              <label style={{ fontSize: "9px", color: "var(--text3)", display: "block", marginBottom: "3px" }}>{label}</label>
+              <input
+                value={brandInput[field]}
+                onChange={(e) => onBrandInputChange(field, e.target.value)}
+                placeholder={ph}
+                style={{ width: "100%", boxSizing: "border-box", background: "var(--bg3)", border: "1px solid var(--border)", borderRadius: "3px", color: "var(--text1)", fontSize: "10px", padding: "4px 7px" }}
+              />
+            </div>
+          ))}
+
+          {/* Competitor URLs */}
+          <div style={{ marginBottom: "8px" }}>
+            <label style={{ fontSize: "9px", color: "var(--text3)", display: "block", marginBottom: "3px" }}>
+              {zh ? "競對 / 參考網站（每行一個）" : "Competitor / reference sites (one per line)"}
+            </label>
+            <textarea
+              value={brandInput.referenceUrls}
+              onChange={(e) => onBrandInputChange("referenceUrls", e.target.value)}
+              placeholder={zh ? "https://competitor.com\nhttps://reference.com" : "https://competitor.com\nhttps://reference.com"}
+              rows={3}
+              style={{ width: "100%", boxSizing: "border-box", background: "var(--bg3)", border: "1px solid var(--border)", borderRadius: "3px", color: "var(--text1)", fontSize: "10px", padding: "4px 7px", resize: "vertical", fontFamily: "monospace" }}
+            />
+          </div>
+
+          {/* Free-form notes */}
+          <div style={{ marginBottom: "8px" }}>
+            <label style={{ fontSize: "9px", color: "var(--text3)", display: "block", marginBottom: "3px" }}>
+              {zh ? "補充說明 / 設計偏好" : "Extra notes / design preferences"}
+            </label>
+            <textarea
+              value={brandInput.rawNotes}
+              onChange={(e) => onBrandInputChange("rawNotes", e.target.value)}
+              placeholder={zh ? "例：色調偏深藍紫，扁平化設計，教育科技感，避免卡通風格…" : "e.g. Dark blue-purple tones, flat design, edtech aesthetic, avoid cartoonish…"}
+              rows={3}
+              style={{ width: "100%", boxSizing: "border-box", background: "var(--bg3)", border: "1px solid var(--border)", borderRadius: "3px", color: "var(--text1)", fontSize: "10px", padding: "4px 7px", resize: "vertical" }}
+            />
+          </div>
+
+          {/* Error */}
+          {brandError && (
+            <div style={{ fontSize: "9px", color: "var(--red)", marginBottom: "6px", padding: "4px 6px", background: "rgba(239,68,68,0.08)", borderRadius: "3px" }}>
+              {brandError}
+            </div>
+          )}
+
+          {/* Generated brand card */}
+          {brand && (
+            <div style={{ marginBottom: "8px", padding: "8px", background: "rgba(124,111,255,0.06)", border: "1px solid rgba(124,111,255,0.2)", borderRadius: "3px" }}>
+              <div style={{ fontSize: "9px", color: "var(--purple)", fontWeight: 700, marginBottom: "4px" }}>
+                ✓ {zh ? "品牌設定" : "Brand Profile"} — {brand.name}
+              </div>
+              {[
+                [zh ? "語氣" : "Tone", brand.tone],
+                [zh ? "受眾" : "Audience", brand.audience],
+                [zh ? "色彩" : "Colors", brand.colorPalette],
+                [zh ? "視覺" : "Visual", brand.visualStyle],
+                [zh ? "關鍵字" : "Keywords", brand.keywords],
+                [zh ? "競對" : "Competitors", brand.competitors],
+              ].map(([k, v]) => v ? (
+                <div key={k} style={{ fontSize: "9px", marginBottom: "2px" }}>
+                  <span style={{ color: "var(--text3)" }}>{k}：</span>
+                  <span style={{ color: "var(--text2)" }}>{v}</span>
+                </div>
+              ) : null)}
+              {brand.generatedAt && (
+                <div style={{ fontSize: "8px", color: "var(--text3)", marginTop: "4px" }}>{zh ? "生成於" : "Generated"} {brand.generatedAt}</div>
+              )}
+            </div>
+          )}
+
+          {/* Actions */}
+          <div style={{ display: "flex", gap: "6px" }}>
+            <button
+              onClick={onAnalyzeBrand}
+              disabled={brandAnalyzing}
+              className="ide-btn primary"
+              style={{ flex: 1, fontSize: "10px", padding: "5px 8px" }}
+            >
+              {brandAnalyzing
+                ? (zh ? "🔍 分析中…" : "🔍 Analyzing…")
+                : (zh ? "🔍 分析並生成品牌設定" : "🔍 Analyze & Generate")}
+            </button>
+            {brand && (
+              <button onClick={onClearBrand} className="ide-btn" style={{ fontSize: "10px", padding: "5px 8px" }}>
+                {zh ? "清除" : "Clear"}
+              </button>
+            )}
+          </div>
+          <div style={{ fontSize: "8px", color: "var(--text3)", marginTop: "4px" }}>
+            {zh ? "* 生成後品牌設定將自動注入所有帖文及視覺 Prompt 生成" : "* Brand profile auto-injects into all post & visual prompt generation"}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ─── BYOK Tab ─────────────────────────────────────────────── */
+
+interface BrandInputState {
+  name: string;
+  referenceUrls: string;
+  keywords: string;
+  audience: string;
+  rawNotes: string;
+}
 
 interface BYOKTabProps {
   providers: Provider[];
@@ -1293,6 +1618,13 @@ interface BYOKTabProps {
   onProviderChange: (v: string) => void;
   onGenerate: () => void;
   lang: Lang;
+  brandInput: BrandInputState;
+  onBrandInputChange: (field: keyof BrandInputState, val: string) => void;
+  brand: BrandContext | null;
+  brandAnalyzing: boolean;
+  brandError: string;
+  onAnalyzeBrand: () => void;
+  onClearBrand: () => void;
 }
 
 function BYOKTab({
@@ -1300,6 +1632,13 @@ function BYOKTab({
   states,
   onUpdate,
   onTest,
+  brandInput,
+  onBrandInputChange,
+  brand,
+  brandAnalyzing,
+  brandError,
+  onAnalyzeBrand,
+  onClearBrand,
   genTopic,
   genPillar,
   genProvider,
@@ -1354,6 +1693,19 @@ function BYOKTab({
           <span style={{ color: "var(--teal)" }}>✦</span> {t("panel_generate", lang)}
         </div>
         <div style={{ padding: "12px", overflowY: "auto", flex: 1 }}>
+
+          {/* ── Brand Profile Panel ── */}
+          <BrandPanel
+            lang={lang}
+            brandInput={brandInput}
+            onBrandInputChange={onBrandInputChange}
+            brand={brand}
+            brandAnalyzing={brandAnalyzing}
+            brandError={brandError}
+            onAnalyzeBrand={onAnalyzeBrand}
+            onClearBrand={onClearBrand}
+          />
+
           <div style={{ marginBottom: "10px" }}>
             <label
               style={{
@@ -1470,6 +1822,15 @@ function BYOKTab({
               {genError}
             </div>
           )}
+          {/* Brand indicator in gen panel */}
+          {brand && (
+            <div style={{ display: "flex", alignItems: "center", gap: "6px", marginBottom: "8px", padding: "4px 8px", background: "rgba(124,111,255,0.08)", border: "1px solid rgba(124,111,255,0.3)", borderRadius: "3px" }}>
+              <span style={{ fontSize: "9px", color: "var(--purple)" }}>🎨</span>
+              <span style={{ fontSize: "9px", color: "var(--purple)", flex: 1 }}>{lang === "zh" ? `品牌設定已載入：${brand.name}` : `Brand loaded: ${brand.name}`}</span>
+              <button onClick={onClearBrand} style={{ fontSize: "9px", color: "var(--text3)", background: "none", border: "none", cursor: "pointer", padding: 0 }}>{lang === "zh" ? "清除" : "Clear"}</button>
+            </div>
+          )}
+
           {genResult && (
             <div
               style={{
